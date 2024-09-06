@@ -4,7 +4,7 @@ import dataclasses
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from functools import cached_property
-from typing import Dict, List, Optional, Tuple, TypeVar, Union
+from typing import Dict, List, Optional, TypeVar, Union
 
 from marshmallow import ValidationError
 
@@ -35,12 +35,12 @@ from starknet_py.proxy.contract_abi_resolver import (
     ProxyConfig,
     prepare_proxy_config,
 )
-from starknet_py.serialization import TupleDataclass, serializer_for_function
-from starknet_py.serialization.factory import serializer_for_function_v1
-from starknet_py.serialization.function_serialization_adapter import (
-    FunctionSerializationAdapterV0,
-    FunctionSerializationAdapterV1,
+from starknet_py.serialization import (
+    FunctionSerializationAdapter,
+    TupleDataclass,
+    serializer_for_function,
 )
+from starknet_py.serialization.factory import serializer_for_function_v1
 from starknet_py.utils.constructor_args_translator import _is_abi_v2
 from starknet_py.utils.sync import add_sync_methods
 
@@ -303,9 +303,7 @@ class DeployResult(SentTransaction):
 @dataclass
 class PreparedCallBase(Call):
     _client: Client
-    _payload_transformer: Union[
-        FunctionSerializationAdapterV0, FunctionSerializationAdapterV1
-    ]
+    _payload_transformer: FunctionSerializationAdapter
 
 
 @add_sync_methods
@@ -335,7 +333,7 @@ class PreparedFunctionCall(PreparedCallBase):
         self,
         block_hash: Optional[str] = None,
         block_number: Optional[Union[int, Tag]] = None,
-    ) -> Union[TupleDataclass, Tuple]:
+    ) -> TupleDataclass:
         """
         Calls a method.
 
@@ -586,7 +584,7 @@ class ContractFunction:
         block_hash: Optional[str] = None,
         block_number: Optional[Union[int, Tag]] = None,
         **kwargs,
-    ) -> Union[TupleDataclass, Tuple]:
+    ) -> TupleDataclass:
         """
         Call contract's function. ``*args`` and ``**kwargs`` are translated into Cairo calldata.
         The result is translated from Cairo data to python values.
@@ -811,6 +809,37 @@ class Contract:
         )
 
     @staticmethod
+    async def declare_v1(
+        account: BaseAccount,
+        compiled_contract: str,
+        *,
+        nonce: Optional[int] = None,
+        max_fee: Optional[int] = None,
+        auto_estimate: bool = False,
+    ) -> DeclareResult:
+        """
+        Declares a contract.
+
+        :param account: BaseAccount used to sign and send declare transaction.
+        :param compiled_contract: String containing compiled contract.
+        :param nonce: Nonce of the transaction.
+        :param max_fee: Max amount of Wei to be paid when executing transaction.
+        :param auto_estimate: Use automatic fee estimation (not recommended, as it may lead to high costs).
+        :return: DeclareResult instance.
+        """
+
+        declare_tx = await account.sign_declare_v1(
+            compiled_contract=compiled_contract,
+            nonce=nonce,
+            max_fee=max_fee,
+            auto_estimate=auto_estimate,
+        )
+
+        return await _declare_contract(
+            declare_tx, account, compiled_contract, cairo_version=0
+        )
+
+    @staticmethod
     async def declare_v2(
         account: BaseAccount,
         compiled_contract: str,
@@ -963,7 +992,7 @@ class Contract:
     async def deploy_contract_v3(
         account: BaseAccount,
         class_hash: Hash,
-        abi: Optional[List] = None,
+        abi: List,
         constructor_args: Optional[Union[List, Dict]] = None,
         *,
         deployer_address: AddressRepresentation = DEFAULT_DEPLOYER_ADDRESS,
@@ -1014,15 +1043,9 @@ class Contract:
             auto_estimate=auto_estimate,
         )
 
-        if abi is not None:
-            deployed_contract = Contract(
-                provider=account, address=address, abi=abi, cairo_version=cairo_version
-            )
-        else:
-            deployed_contract = await Contract.from_address(
-                address=address, provider=account
-            )
-
+        deployed_contract = Contract(
+            provider=account, address=address, abi=abi, cairo_version=cairo_version
+        )
         deploy_result = DeployResult(
             hash=res.transaction_hash,
             _client=account.client,
